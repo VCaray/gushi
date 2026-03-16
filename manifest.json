@@ -1,8 +1,9 @@
 {
   "name": "股識 — AI 台股分析",
   "short_name": "股識",
-  "description": "AI 驅動的台股智能分析工具，支援同業比較、財報解讀、盤後研究",
-  "start_url": "/",
+  "description": "AI 驅動的台股智能分析工具",
+  "start_url": "/gushi/",
+  "scope": "/gushi/",
   "display": "standalone",
   "background_color": "#0d1117",
   "theme_color": "#10b981",
@@ -21,7 +22,5 @@
       "type": "image/png",
       "purpose": "any maskable"
     }
-  ],
-  "screenshots": [],
-  "categories": ["finance", "utilities"]
+  ]
 }
