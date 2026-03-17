@@ -6,7 +6,50 @@ const CACHE_URLS = [
   '/',
   '/index.html',
   '/manifest.json',
-  '/icon-192.png',
+  '/icon-192.png',const CACHE_NAME = 'gushi-v9';
+const CACHE_URLS = ['/', '/index.html', '/manifest.json', '/icon-192.png', '/icon-512.png'];
+
+self.addEventListener('install', e => {
+  e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(CACHE_URLS)));
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', e => {
+  e.waitUntil(
+    caches.keys().then(keys =>
+      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
+    )
+  );
+  self.clients.claim();
+});
+
+self.addEventListener('message', e => {
+  if (e.data?.type === 'SKIP_WAITING') self.skipWaiting();
+});
+
+self.addEventListener('fetch', e => {
+  if (e.request.url.includes('openai.com') ||
+      e.request.url.includes('yahoo.com') ||
+      e.request.url.includes('twse.com') ||
+      e.request.url.includes('corsproxy') ||
+      e.request.url.includes('allorigins')) return;
+
+  e.respondWith(
+    caches.match(e.request).then(cached => {
+      if (cached) return cached;
+      return fetch(e.request).then(res => {
+        if (res.ok && e.request.method === 'GET') {
+          const clone = res.clone();
+          caches.open(CACHE_NAME).then(c => c.put(e.request, clone));
+        }
+        return res;
+      }).catch(() => {
+        if (e.request.destination === 'document') return caches.match('/index.html');
+      });
+    })
+  );
+});
+
   '/icon-512.png',
 ];
 
