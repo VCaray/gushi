@@ -689,7 +689,7 @@ body.tab-log    .header .logo { flex: 1; }
         </svg>
       </div>
       <div class="logo-text-wrap">
-        <div class="logo-name">股<em>識</em> <span style="font-size:.55rem;color:var(--txt3);font-family:var(--mono);font-weight:400;letter-spacing:0;vertical-align:middle">v0.12</span></div>
+        <div class="logo-name">股<em>識</em> <span style="font-size:.55rem;color:var(--txt3);font-family:var(--mono);font-weight:400;letter-spacing:0;vertical-align:middle">v0.13</span></div>
         <div class="logo-sub" id="logoSub">
           <span class="logo-persona-dot"></span>
           <span id="logoSubText">台股 AI 分析助理</span>
@@ -1589,7 +1589,7 @@ const API = {
             chg:   prev ? (((price-prev)/prev)*100).toFixed(2) : '0.00',
             name:  TW_NAMES[code] || q.name || name || code,
             code,  _src: 'Fugle 即時',
-            _src_url: `https://stockscreen.fugle.tw/symbolPage/${code}`,
+            _src_url: `https://tw.stock.yahoo.com/quote/${code}`,  // Fugle 無網頁版，連到 Yahoo 查看走勢
           };
         }
       }
@@ -1682,7 +1682,7 @@ const API = {
             chg:   prev ? (((cur-prev)/prev)*100).toFixed(2) : '0.00',
             name:  TW_NAMES[code] || m.shortName || name || code,
             code,  _src: 'Yahoo Finance',
-            _src_url: `https://stockscreen.fugle.tw/symbolPage/${code}`,
+            _src_url: `https://tw.stock.yahoo.com/quote/${code}`,  // Fugle 無網頁版，連到 Yahoo 查看走勢
           };
         }
       }
