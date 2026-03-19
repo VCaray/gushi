@@ -662,6 +662,14 @@ body {
 body.tab-report .header .logo,
 body.tab-log    .header .logo { flex: 1; }
 
+
+/* ══ 模擬交易 ══ */
+.sim-stat-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-bottom:16px; }
+.sim-stat-box { background:var(--bg3); border:1px solid var(--bdr); border-radius:var(--r2); padding:12px 8px; text-align:center; }
+.sim-stat-val { font-family:var(--mono); font-size:1.2rem; font-weight:800; line-height:1; margin-bottom:4px; }
+.sim-stat-key { font-size:.67rem; color:var(--txt3); }
+.sim-trade-item { background:var(--bg3); border-radius:var(--r2); padding:13px; margin-bottom:10px; border:1px solid var(--bdr); border-left:3px solid var(--acc); transition:all .2s; }
+
 </style>
 </head>
 <body>
@@ -796,6 +804,18 @@ body.tab-log    .header .logo { flex: 1; }
       </div>
       <div id="costHistory"></div>
     </div>
+    <!-- 模擬交易 -->
+    <div class="card">
+      <div class="card-hdr">
+        <div class="card-ttl">🎯 模擬交易追蹤</div>
+        <button class="btn-sm" onclick="if(confirm('確定清除所有模擬交易？')){SimTrade._trades=[];SimTrade.save();SimTradeUI.render();UI.toast('已清除')}">清除</button>
+      </div>
+      <div style="font-size:.73rem;color:var(--txt3);margin-bottom:12px;line-height:1.7">
+        AI 給<span style="color:var(--up)">買進</span>信號時自動記錄 · 追蹤目標價/止損價 · 統計各人格勝率
+      </div>
+      <div id="simTradeContent"></div>
+    </div>
+
     <!-- 快取分析記錄 -->
     <div class="card">
       <div class="card-hdr">
@@ -990,7 +1010,9 @@ body.tab-log    .header .logo { flex: 1; }
 <
 <
 <
+<
 <script>
+'use strict';
 'use strict';
 'use strict';
 'use strict';
@@ -1265,7 +1287,7 @@ const UI = {
     // Header 搜尋列顯示/隱藏
     const searchRow = document.querySelector('.page-search-bar');
     if (searchRow) searchRow.style.display = t === 'home' ? 'flex' : 'none';
-    if (t === 'log')    { Cost.render(); Cache.renderHistory(); }
+    if (t === 'log')    { Cost.render(); Cache.renderHistory(); SimTradeUI.render(); }
     if (t === 'report') Report.renderHistory();
   },
 
@@ -2366,6 +2388,299 @@ const PersonaEditor = {
   },
 };
 
+
+// ══════════════════════════════════════════
+// 模擬交易系統
+// ══════════════════════════════════════════
+const SimTrade = {
+  KEY: 'gushi_simtrades',
+  _trades: [],
+
+  load() {
+    try { this._trades = JSON.parse(localStorage.getItem(this.KEY) || '[]'); } catch { this._trades = []; }
+  },
+
+  save() {
+    try { localStorage.setItem(this.KEY, JSON.stringify(this._trades)); } catch {}
+  },
+
+  // AI 分析完自動記錄（買進或強力買進才記）
+  record(code, name, price, ai, persona) {
+    const dir = ai?.direction || '';
+    if (!['買進','強力買進'].includes(dir)) return; // 只記買進信號
+    if (!ai?.target_price && !ai?.stop_loss) return; // 沒有目標價就不記
+
+    const trade = {
+      id:         Date.now(),
+      code,
+      name:       name || code,
+      persona,
+      direction:  dir,
+      entryPrice: +price,
+      targetPrice: ai.target_price ? +ai.target_price : null,
+      stopLoss:   ai.stop_loss    ? +ai.stop_loss    : null,
+      confidence: ai.confidence_score || 0,
+      entryDate:  new Date().toISOString(),
+      entryDateStr: new Date().toLocaleString('zh-TW'),
+      status:     'open',    // open | win | loss | expired
+      exitPrice:  null,
+      exitDate:   null,
+      pnlPct:     null,
+      checkDays:  7,         // 7天後自動結算
+    };
+
+    this._trades.unshift(trade);
+    if (this._trades.length > 100) this._trades = this._trades.slice(0, 100);
+    this.save();
+    console.log('[SimTrade] 記錄買進:', code, '@', price);
+  },
+
+  // 更新某筆交易的當前價格，檢查是否達到目標/止損
+  async checkTrade(trade) {
+    if (trade.status !== 'open') return trade;
+
+    // 檢查是否過期（超過 checkDays）
+    const daysSince = (Date.now() - new Date(trade.entryDate).getTime()) / 86400000;
+    if (daysSince > trade.checkDays) {
+      // 過期：抓當前價格結算
+      try {
+        const p = await API.getPrice(trade.code);
+        if (p?.price) {
+          trade.exitPrice  = +p.price;
+          trade.exitDate   = new Date().toISOString();
+          trade.pnlPct     = ((trade.exitPrice - trade.entryPrice) / trade.entryPrice * 100).toFixed(2);
+          trade.status     = +trade.pnlPct >= 0 ? 'win' : 'loss';
+          trade.exitReason = '到期結算';
+        }
+      } catch {}
+      return trade;
+    }
+
+    // 未過期：抓當前價格檢查是否觸達目標/止損
+    try {
+      const p = await API.getPrice(trade.code);
+      if (!p?.price) return trade;
+      const cur = +p.price;
+      trade._currentPrice = cur;
+      trade._currentPnlPct = ((cur - trade.entryPrice) / trade.entryPrice * 100).toFixed(2);
+
+      if (trade.targetPrice && cur >= trade.targetPrice) {
+        trade.exitPrice  = cur;
+        trade.exitDate   = new Date().toISOString();
+        trade.pnlPct     = ((cur - trade.entryPrice) / trade.entryPrice * 100).toFixed(2);
+        trade.status     = 'win';
+        trade.exitReason = '達到目標價 🎯';
+      } else if (trade.stopLoss && cur <= trade.stopLoss) {
+        trade.exitPrice  = cur;
+        trade.exitDate   = new Date().toISOString();
+        trade.pnlPct     = ((cur - trade.entryPrice) / trade.entryPrice * 100).toFixed(2);
+        trade.status     = 'loss';
+        trade.exitReason = '觸及止損 🔴';
+      }
+    } catch {}
+    return trade;
+  },
+
+  // 統計數據
+  stats() {
+    const closed = this._trades.filter(t => t.status !== 'open');
+    const wins   = closed.filter(t => t.status === 'win');
+    const losses = closed.filter(t => t.status === 'loss');
+    const winRate = closed.length ? (wins.length / closed.length * 100).toFixed(1) : '--';
+    const avgPnl  = closed.length
+      ? (closed.reduce((s,t) => s + (+t.pnlPct||0), 0) / closed.length).toFixed(2)
+      : '--';
+    const totalPnl = closed.reduce((s,t) => s + (+t.pnlPct||0), 0).toFixed(2);
+
+    // 各人格勝率
+    const personaStats = {};
+    closed.forEach(t => {
+      if (!personaStats[t.persona]) personaStats[t.persona] = { win:0, total:0 };
+      personaStats[t.persona].total++;
+      if (t.status === 'win') personaStats[t.persona].win++;
+    });
+
+    return { total: this._trades.length, closed: closed.length, wins: wins.length,
+             losses: losses.length, winRate, avgPnl, totalPnl, personaStats,
+             open: this._trades.filter(t => t.status === 'open').length };
+  },
+
+  // 手動結算一筆
+  async closeOne(id) {
+    const t = this._trades.find(t => t.id === id);
+    if (!t || t.status !== 'open') return;
+    try {
+      const p = await API.getPrice(t.code);
+      if (p?.price) {
+        t.exitPrice  = +p.price;
+        t.exitDate   = new Date().toISOString();
+        t.pnlPct     = ((t.exitPrice - t.entryPrice) / t.entryPrice * 100).toFixed(2);
+        t.status     = +t.pnlPct >= 0 ? 'win' : 'loss';
+        t.exitReason = '手動結算';
+        this.save();
+        SimTradeUI.render();
+        UI.toast(+t.pnlPct >= 0 ? `✓ 獲利 +${t.pnlPct}%` : `✗ 虧損 ${t.pnlPct}%`);
+      }
+    } catch(e) { UI.toast('結算失敗：' + e.message, 'error'); }
+  },
+
+  // 刪除一筆
+  remove(id) {
+    this._trades = this._trades.filter(t => t.id !== id);
+    this.save();
+    SimTradeUI.render();
+  },
+
+  // 批量更新所有開放中的交易
+  async refreshAll() {
+    let updated = 0;
+    for (let i = 0; i < this._trades.length; i++) {
+      if (this._trades[i].status === 'open') {
+        this._trades[i] = await this.checkTrade(this._trades[i]);
+        updated++;
+      }
+    }
+    if (updated > 0) { this.save(); SimTradeUI.render(); }
+    return updated;
+  },
+};
+
+// ══ 模擬交易 UI ══
+const SimTradeUI = {
+  render() {
+    const el = document.getElementById('simTradeContent');
+    if (!el) return;
+
+    const stats = SimTrade.stats();
+    const trades = SimTrade._trades;
+
+    // 人格名稱對應
+    const pName = { guardian:'🛡️ 穩健守護', hunter:'🎯 成長獵手', oracle:'📖 價值導師', sensei:'📐 技術大師', custom:'✏️ 自訂' };
+
+    // 統計卡
+    const statHtml = `
+      <div class="sim-stat-grid">
+        <div class="sim-stat-box">
+          <div class="sim-stat-val" style="color:var(--acc)">${stats.open}</div>
+          <div class="sim-stat-key">進行中</div>
+        </div>
+        <div class="sim-stat-box">
+          <div class="sim-stat-val" style="color:${+stats.winRate>=50?'var(--up)':'var(--dn)'}">${stats.winRate}%</div>
+          <div class="sim-stat-key">勝率</div>
+        </div>
+        <div class="sim-stat-box">
+          <div class="sim-stat-val" style="color:${+stats.avgPnl>=0?'var(--up)':'var(--dn)'}">${stats.avgPnl==='--'?'--':(+stats.avgPnl>=0?'+':'')+stats.avgPnl+'%'}</div>
+          <div class="sim-stat-key">平均報酬</div>
+        </div>
+        <div class="sim-stat-box">
+          <div class="sim-stat-val">${stats.wins}W/${stats.losses}L</div>
+          <div class="sim-stat-key">勝/敗</div>
+        </div>
+      </div>`;
+
+    // 人格勝率對比
+    const personaHtml = Object.keys(stats.personaStats).length ? `
+      <div style="margin-bottom:14px">
+        <div class="card-ttl" style="margin-bottom:10px">🧠 各人格勝率</div>
+        ${Object.entries(stats.personaStats).map(([pid, s]) => {
+          const wr = (s.win/s.total*100).toFixed(0);
+          return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">
+            <div style="font-size:.8rem;color:var(--txt2);width:90px;flex-shrink:0">${pName[pid]||pid}</div>
+            <div style="flex:1;height:6px;background:var(--sur2);border-radius:3px;overflow:hidden">
+              <div style="height:100%;width:${wr}%;background:${+wr>=50?'var(--up)':'var(--dn)'};border-radius:3px"></div>
+            </div>
+            <div style="font-size:.8rem;font-family:var(--mono);font-weight:700;width:36px;text-align:right;color:${+wr>=50?'var(--up)':'var(--dn)'}">${wr}%</div>
+            <div style="font-size:.73rem;color:var(--txt3)">${s.total}筆</div>
+          </div>`;
+        }).join('')}
+      </div>` : '';
+
+    // 交易列表
+    const listHtml = trades.length === 0
+      ? '<div style="text-align:center;padding:32px;color:var(--txt3);font-size:.87rem">尚無模擬交易記錄<br>分析股票後 AI 給買進信號就會自動記錄</div>'
+      : trades.map(t => {
+          const isOpen   = t.status === 'open';
+          const isWin    = t.status === 'win';
+          const pnl      = isOpen ? t._currentPnlPct : t.pnlPct;
+          const curPrice = isOpen ? t._currentPrice : t.exitPrice;
+          const pnlColor = pnl == null ? 'var(--txt3)' : +pnl >= 0 ? 'var(--up)' : 'var(--dn)';
+          const statusTag = isOpen
+            ? `<span class="tag tag-b">進行中</span>`
+            : isWin
+              ? `<span class="tag tag-g">獲利 +${t.pnlPct}%</span>`
+              : `<span class="tag tag-r">虧損 ${t.pnlPct}%</span>`;
+
+          // 進度條（入場→目標/止損）
+          let progressHtml = '';
+          if (t.targetPrice && t.stopLoss && curPrice) {
+            const range = t.targetPrice - t.stopLoss;
+            const pos   = Math.max(0, Math.min(100, ((curPrice - t.stopLoss) / range * 100)));
+            progressHtml = `
+              <div style="margin:8px 0 4px;position:relative;height:6px;background:var(--sur2);border-radius:3px">
+                <div style="height:100%;width:${pos.toFixed(0)}%;background:linear-gradient(90deg,var(--dn),var(--up));border-radius:3px"></div>
+                <div style="position:absolute;top:50%;transform:translateY(-50%);left:${pos.toFixed(0)}%;width:10px;height:10px;background:#fff;border-radius:50%;margin-left:-5px;border:2px solid var(--acc)"></div>
+              </div>
+              <div style="display:flex;justify-content:space-between;font-size:.6rem;color:var(--txt3);font-family:var(--mono)">
+                <span>止損 $${t.stopLoss}</span>
+                <span>目標 $${t.targetPrice}</span>
+              </div>`;
+          }
+
+          const daysSince = ((Date.now() - new Date(t.entryDate).getTime()) / 86400000).toFixed(1);
+
+          return `
+          <div class="sim-trade-item" style="border-left:3px solid ${isOpen?'var(--acc)':isWin?'var(--up)':'var(--dn)'}">
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px">
+              <div>
+                <span style="font-family:var(--mono);font-weight:700;color:var(--acc);font-size:.93rem">${t.code}</span>
+                <span style="font-size:.87rem;color:var(--txt2);margin-left:6px">${t.name}</span>
+                <div style="font-size:.67rem;color:var(--txt3);margin-top:2px">${pName[t.persona]||t.persona} · ${t.entryDateStr}</div>
+              </div>
+              <div style="text-align:right">
+                ${statusTag}
+                ${isOpen ? `<div style="font-size:.73rem;color:var(--txt3);margin-top:3px">${daysSince}天</div>` : ''}
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:6px">
+              <div style="background:var(--bg3);border-radius:var(--r2);padding:7px 9px">
+                <div style="font-size:.6rem;color:var(--txt3);margin-bottom:2px">入場價</div>
+                <div style="font-family:var(--mono);font-size:.87rem;font-weight:700">$${t.entryPrice}</div>
+              </div>
+              <div style="background:var(--bg3);border-radius:var(--r2);padding:7px 9px">
+                <div style="font-size:.6rem;color:var(--txt3);margin-bottom:2px">現價</div>
+                <div style="font-family:var(--mono);font-size:.87rem;font-weight:700;color:${pnlColor}">${curPrice ? '$'+curPrice : '--'}</div>
+              </div>
+              <div style="background:var(--bg3);border-radius:var(--r2);padding:7px 9px">
+                <div style="font-size:.6rem;color:var(--txt3);margin-bottom:2px">損益</div>
+                <div style="font-family:var(--mono);font-size:.87rem;font-weight:700;color:${pnlColor}">${pnl!=null?(+pnl>=0?'+':'')+pnl+'%':'--'}</div>
+              </div>
+            </div>
+            ${progressHtml}
+            ${t.exitReason ? `<div style="font-size:.73rem;color:var(--txt3);margin-top:4px">${t.exitReason} · ${new Date(t.exitDate).toLocaleDateString('zh-TW')}</div>` : ''}
+            ${isOpen ? `
+            <div style="display:flex;gap:6px;margin-top:8px">
+              <button onclick="SimTrade.closeOne(${t.id})" class="btn-sm" style="flex:1">📊 立即結算</button>
+              <button onclick="SimTrade.remove(${t.id})" class="btn-sm" style="color:var(--dn)">✕ 刪除</button>
+            </div>` : `
+            <button onclick="SimTrade.remove(${t.id})" class="btn-sm" style="margin-top:6px;color:var(--txt3)">✕ 移除紀錄</button>`}
+          </div>`;
+        }).join('');
+
+    el.innerHTML = statHtml + personaHtml + `
+      <div class="card-ttl" style="margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">
+        <span>📋 交易記錄（${trades.length} 筆）</span>
+        <button class="btn-sm" onclick="SimTradeUI.refreshAll()">🔄 更新所有價格</button>
+      </div>` + listHtml;
+  },
+
+  async refreshAll() {
+    UI.toast('更新中...');
+    const n = await SimTrade.refreshAll();
+    UI.toast(`✓ 已更新 ${n} 筆`);
+    Sound.scan();
+  },
+};
+
 // ══════════════════════════════════════════
 // ⑪ 渲染結果
 // ══════════════════════════════════════════
@@ -2946,9 +3261,14 @@ const App = {
 
       UI.prog(92, '渲染結果...');
       Renderer.render({ price, fund, hist, news, industry, rsi, macd, ma20, ma60, ai, code, peers });
-      // 儲存快取（只存分析結果，不含其他頁面結構）
+      // 儲存快取
       const cacheHtml = UI.$('result').innerHTML;
       Cache.save(code, cacheHtml);
+      // 自動記錄模擬交易（只有 AI 買進信號才記）
+      if (ai?.direction && price?.price) {
+        SimTrade.record(code, price.name || code, price.price, ai, State.settings.persona);
+        SimTradeUI.render();
+      }
       Cache.renderHistory();
       UI.prog(100, '✓ 完成');
       Sound.success();
@@ -3190,6 +3510,7 @@ const Gestures = {
 document.addEventListener('DOMContentLoaded', () => {
   State.load();
   Cache.load();
+  SimTrade.load();
   // 清除舊格式快取（含 header 的版本）
   Object.keys(Cache._data).forEach(code => {
     const c = Cache._data[code];
@@ -3236,6 +3557,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // 防 iPhone 雙擊縮放
   document.querySelectorAll('input').forEach(el => { el.style.fontSize = '16px'; });
 });
+
 
 
 
