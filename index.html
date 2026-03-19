@@ -1516,23 +1516,23 @@ const Cost = {
 // ⑦ 資料抓取層
 // ══════════════════════════════════════════
 const API = {
-  PROXIES: [
-    u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
-    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
-    u => `https://thingproxy.freeboard.io/fetch/${u}`,
-  ],
+  WORKER: 'https://gushi-proxy.thankmeandgod.workers.dev',
 
+  // 透過自己的 Cloudflare Worker 抓資料，穩定不被擋
   async fetch(url, opts = {}) {
-    for (const proxyFn of this.PROXIES) {
-      try {
-        const r = await fetch(proxyFn(url), { signal: AbortSignal.timeout(9000), ...opts });
-        if (r.ok) {
-          const t = await r.text();
+    const workerUrl = `${this.WORKER}?url=${encodeURIComponent(url)}`;
+    try {
+      const r = await fetch(workerUrl, {
+        signal: AbortSignal.timeout(10000),
+        ...opts
+      });
+      if (r.ok) {
+        const t = await r.text();
+        if (t && t.length > 5) {
           try { return JSON.parse(t); } catch { return t; }
         }
-      } catch {}
-    }
+      }
+    } catch(e) { console.warn('[Worker] failed:', e.message); }
     return null;
   },
 
@@ -1612,6 +1612,31 @@ const API = {
         }
       } catch (e) { log(`✗ TWSE ${ex}: ` + e.message); }
     }
+
+    // ── 備援：Yahoo Finance 台灣（不同 endpoint）──
+    log('Yahoo Finance 備援');
+    try {
+      const urls = [
+        `https://query1.finance.yahoo.com/v8/finance/chart/${code}.TW?interval=1d&range=1d`,
+        `https://query2.finance.yahoo.com/v8/finance/chart/${code}.TWO?interval=1d&range=1d`,
+      ];
+      for (const url of urls) {
+        const d = await this.fetch(url);
+        const res = d?.chart?.result?.[0];
+        if (res?.meta?.regularMarketPrice > 0) {
+          const m = res.meta;
+          const cur = m.regularMarketPrice;
+          const prev = m.chartPreviousClose || cur;
+          log('✓ Yahoo 備援');
+          return { price: +cur.toFixed(2), open: +(m.regularMarketOpen||cur).toFixed(2),
+            high: +(m.regularMarketDayHigh||cur).toFixed(2), low: +(m.regularMarketDayLow||cur).toFixed(2),
+            prev: +prev.toFixed(2), vol: m.regularMarketVolume||0,
+            chg: prev ? (((cur-prev)/prev)*100).toFixed(2) : '0.00',
+            name: TW_NAMES[code] || m.shortName || code, code,
+            _src: 'Yahoo Finance', _src_url: `https://tw.stock.yahoo.com/quote/${code}` };
+        }
+      }
+    } catch(e) { log('✗ Yahoo備援: ' + e.message); }
 
     log('✗ 全部來源失敗');
     return null;
@@ -2847,15 +2872,24 @@ const App = {
       if (!price) {
         const logs = [];
         await API.getPrice(code, s => logs.push(s));
+        // 稍等 2 秒再自動重試一次
+        UI.prog(8, '重試中...');
+        await new Promise(r => setTimeout(r, 2000));
+        const price2 = await API.getPrice(code);
+        if (price2) {
+          // 重試成功，繼續流程
+          UI.$('stockInput').value = code;
+          await App._continueRun(code, price2);
+          return;
+        }
         UI.$('result').innerHTML = `
           <div class="empty">
-            <div class="empty-ico">❌</div>
-            <div class="empty-title">找不到股價資料</div>
-            <div class="empty-sub" style="text-align:left;max-width:380px;margin:0 auto">
-              <b>${code}</b> 所有來源均失敗：<br><br>
-              ${logs.map(l => `<span style="font-size:11px;font-family:var(--mono);color:${l.startsWith('✓') ? 'var(--up)' : 'var(--txt3)'}">${l}</span>`).join('<br>')}
-              <br><br>
-              <span style="color:var(--txt2)">可能原因：網路封鎖 proxy、休市、或代號錯誤</span>
+            <div class="empty-ico">📡</div>
+            <div class="empty-title">網路連線問題</div>
+            <div class="empty-sub">
+              <b>${TW_NAMES[code]||code}</b> 股價暫時無法取得<br><br>
+              <button onclick="App.run()" style="background:var(--acc);border:none;border-radius:var(--r4);color:#fff;padding:10px 24px;font-size:.93rem;font-weight:700;cursor:pointer;margin-bottom:12px">🔄 重新嘗試</button><br>
+              <span style="font-size:.8rem;color:var(--txt3)">可能原因：proxy 暫時被封鎖，通常等 30 秒再試就好<br>或切換 WiFi / 行動數據 後重試</span>
             </div>
           </div>`;
         return;
@@ -3004,6 +3038,70 @@ const App = {
 
   _checkCancelled() {
     if (this._cancelled) throw new Error('分析已取消');
+  },
+
+  // 取得股價後的主流程（供重試呼叫）
+  async _continueRun(code, price) {
+    UI.switchTab('home');
+    this._startRunInner();
+
+    this._checkCancelled();
+    UI.prog(20, '取得基本面...');
+    Sound.scan();
+
+    const [fundRes, histRes, newsRes, industryRes] = await Promise.allSettled([
+      API.getFundamentals(code),
+      API.getHistory(code, 65),
+      API.getNews(code, price.name || code),
+      API.getIndustry(code),
+    ]);
+    const fund     = fundRes.value     || null;
+    const hist     = histRes.value     || null;
+    const news     = newsRes.value     || [];
+    const industry = industryRes.value || null;
+
+    this._checkCancelled();
+    UI.prog(45, '取得同業比較...');
+    Sound.scan();
+    const peers = await API.getPeers(code, industry?.industry || '').catch(() => null);
+
+    const closes = hist?.map(d => d.close) || [];
+    const rsi    = closes.length >= 15 ? Indicators.rsi(closes) : null;
+    const macd   = closes.length >= 35 ? Indicators.macd(closes) : null;
+    const ma20   = Indicators.ma(closes, 20);
+    const ma60   = Indicators.ma(closes, 60);
+
+    this._checkCancelled();
+    UI.prog(65, 'AI 分析中...');
+    Sound.scan();
+
+    let ai = null;
+    if (State.settings.apiKey?.startsWith('sk-')) {
+      try {
+        const sys = AIAnalysis.buildSystemPrompt();
+        const usr = AIAnalysis.buildUserPrompt({ price, fund, rsi, macd, ma20, ma60, news, code, hist });
+        const { result, usage } = await AIAnalysis.callAPI(usr, sys, State.settings.model);
+        ai = result;
+        Cost.record(price.name || code, usage, State.settings.model);
+      } catch (e) {
+        ai = { direction:'觀望', confidence:'低', confidence_pct:0, headline:'AI 分析失敗', summary: e.message };
+      }
+    }
+
+    UI.prog(92, '渲染結果...');
+    Renderer.render({ price, fund, hist, news, industry, rsi, macd, ma20, ma60, ai, code, peers });
+    const cacheHtml = UI.$('result').innerHTML;
+    Cache.save(code, cacheHtml);
+    Cache.renderHistory();
+    UI.prog(100, '✓ 完成');
+    Sound.success(); Haptic.success();
+    setTimeout(() => Sound.coin(), 300);
+    this._endRun();
+  },
+
+  _startRunInner() {
+    // 不重置 UI，只確保按鈕狀態
+    UI.$('runBtn').disabled = true;
   },
 };
 
