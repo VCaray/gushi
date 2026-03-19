@@ -670,6 +670,17 @@ body.tab-log    .header .logo { flex: 1; }
 .sim-stat-key { font-size:.67rem; color:var(--txt3); }
 .sim-trade-item { background:var(--bg3); border-radius:var(--r2); padding:13px; margin-bottom:10px; border:1px solid var(--bdr); border-left:3px solid var(--acc); transition:all .2s; }
 
+
+/* 統計頁 */
+.stats-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:14px; }
+.stats-box { background:var(--bg3); border:1px solid var(--bdr); border-radius:var(--r2); padding:11px 8px; text-align:center; }
+.stats-val { font-family:var(--mono); font-size:1.1rem; font-weight:800; }
+.stats-key { font-size:.65rem; color:var(--txt3); margin-top:3px; }
+.persona-bar-row { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+.persona-bar-label { font-size:.78rem; color:var(--txt2); width:80px; flex-shrink:0; }
+.persona-bar-track { flex:1; height:7px; background:var(--sur2); border-radius:4px; overflow:hidden; }
+.persona-bar-fill { height:100%; border-radius:4px; transition:width .5s; }
+
 </style>
 </head>
 <body>
@@ -689,7 +700,7 @@ body.tab-log    .header .logo { flex: 1; }
         </svg>
       </div>
       <div class="logo-text-wrap">
-        <div class="logo-name">股<em>識</em> <span style="font-size:.55rem;color:var(--txt3);font-family:var(--mono);font-weight:400;letter-spacing:0;vertical-align:middle">v0.13</span></div>
+        <div class="logo-name">股<em>識</em> <span style="font-size:.55rem;color:var(--txt3);font-family:var(--mono);font-weight:400;letter-spacing:0;vertical-align:middle">v0.14</span></div>
         <div class="logo-sub" id="logoSub">
           <span class="logo-persona-dot"></span>
           <span id="logoSubText">台股 AI 分析助理</span>
@@ -843,6 +854,9 @@ body.tab-log    .header .logo { flex: 1; }
     <div class="tab-pill" id="tab-log" onclick="UI.switchTab('log')">
       <span class="tp-ico">📊</span><span>紀錄</span>
     </div>
+    <button class="tab-pill" id="tab-stats" onclick="UI.switchTab('stats')">
+      <span class="tp-ico">🔬</span><span class="tp-lbl">統計</span>
+    </button>
   </div>
 </div>
 
@@ -1004,14 +1018,73 @@ body.tab-log    .header .logo { flex: 1; }
   </div>
 </div>
 
-<
-<
-<
-<
-<
-<
-<
+  <!-- 統計頁 -->
+  <div class="page" id="page-stats">
+    <div class="pull-hint" id="pullHintStats">↓ 下拉更新統計</div>
+    <div class="page-title-bar">
+      <div class="ptb-title">🔬 AI 準確度統計</div>
+      <div class="ptb-sub">各人格勝率 · 各股票命中率 · 批次分析</div>
+    </div>
+    <div class="card">
+      <div class="card-hdr">
+        <div class="card-ttl">🤖 批次分析</div>
+        <span class="tag tag-b" id="batchStatusTag">待機</span>
+      </div>
+      <div style="font-size:.8rem;color:var(--txt2);margin-bottom:12px;line-height:1.7">
+        一鍵用 <strong>4 種人格</strong>分析所有追蹤股票，自動記錄到資料庫
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+        <button class="btn btn-acc" onclick="BatchAnalysis.run()" style="padding:12px">▶ 開始批次分析</button>
+        <button class="btn" onclick="BatchAnalysis.run(['guardian'])" style="padding:12px;font-size:.8rem">🛡️ 只跑穩健守護</button>
+      </div>
+      <div style="font-size:.73rem;color:var(--txt3)">每支股票間隔 2 秒，避免 API 超限</div>
+    </div>
+    <div class="card">
+      <div class="card-hdr">
+        <div class="card-ttl">📈 總體統計</div>
+        <button class="btn-sm" onclick="BackendStatsUI.refresh()">🔄 更新</button>
+      </div>
+      <div id="statsOverviewContent">
+        <div style="text-align:center;padding:20px;color:var(--txt3);font-size:.87rem">點「更新」載入統計資料</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-ttl" style="margin-bottom:12px">🧠 各人格勝率</div>
+      <div id="statsPersonaContent"><div style="color:var(--txt3);font-size:.8rem">尚無足夠資料</div></div>
+    </div>
+    <div class="card">
+      <div class="card-ttl" style="margin-bottom:12px">📋 各股命中率</div>
+      <div id="statsCodeContent"><div style="color:var(--txt3);font-size:.8rem">尚無足夠資料</div></div>
+    </div>
+    <div class="card">
+      <div class="card-hdr">
+        <div class="card-ttl">📌 追蹤清單</div>
+        <button class="btn-sm" onclick="BackendStatsUI.loadWatchlist()">重新載入</button>
+      </div>
+      <div id="statsWatchlistContent"><div style="color:var(--txt3);font-size:.8rem">載入中...</div></div>
+    </div>
+  </div>
+
+  <!-- 批次分析 Overlay -->
+  <div class="overlay" id="batchOverlay">
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <div class="sheet-title">🤖 批次分析進行中</div>
+      <div style="margin:16px 0">
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+          <span id="batchLbl" style="font-size:.87rem;color:var(--txt2)">準備中...</span>
+          <span id="batchPct" style="font-family:var(--mono);color:var(--acc);font-size:.87rem">0/0</span>
+        </div>
+        <div class="prog-bar"><div class="prog-fill" id="batchFill" style="width:0%"></div></div>
+      </div>
+      <div style="font-size:.73rem;color:var(--txt3);margin-bottom:16px">分析完成後自動上傳到資料庫</div>
+      <button class="btn" onclick="BatchAnalysis.cancel()" style="width:100%">✕ 取消</button>
+    </div>
+  </div>
+
+</div><!-- end main -->
 <script>
+'use strict';
 'use strict';
 'use strict';
 'use strict';
@@ -1288,6 +1361,7 @@ const UI = {
     const searchRow = document.querySelector('.page-search-bar');
     if (searchRow) searchRow.style.display = t === 'home' ? 'flex' : 'none';
     if (t === 'log')    { Cost.render(); Cache.renderHistory(); SimTradeUI.render(); }
+    if (t === 'stats')  { BackendStatsUI.refresh(); BackendStatsUI.loadWatchlist(); }
     if (t === 'report') Report.renderHistory();
   },
 
@@ -2727,6 +2801,307 @@ const SimTradeUI = {
   },
 };
 
+
+// ══════════════════════════════════════════
+// 後端 API（Cloudflare D1）
+// ══════════════════════════════════════════
+const Backend = {
+  BASE: 'https://gushi-proxy.thankmeandgod.workers.dev',
+
+  async call(path, method='GET', body=null) {
+    try {
+      const opts = { method, headers: { 'Content-Type': 'application/json' } };
+      if (body) opts.body = JSON.stringify(body);
+      const r = await fetch(this.BASE + path, opts);
+      return await r.json();
+    } catch(e) {
+      console.warn('[Backend]', path, e.message);
+      return { ok: false, error: e.message };
+    }
+  },
+
+  // 上傳分析結果
+  async saveAnalysis(code, name, persona, model, ai, price) {
+    if (!ai || !price) return;
+    return this.call('/api/analyses', 'POST', {
+      code, name, persona, model,
+      direction:    ai.direction,
+      confidence:   ai.confidence_score || 0,
+      headline:     ai.headline || '',
+      entry_price:  price,
+      target_price: ai.target_price || null,
+      stop_loss:    ai.stop_loss    || null,
+      position_pct: ai.position_pct || 0,
+      bull_points:  ai.bull_points  || [],
+      bear_points:  ai.bear_points  || [],
+      indicators:   ai.scoring_breakdown || {},
+      news_count:   (ai.news_analysis || []).length,
+    });
+  },
+
+  // 取得追蹤清單
+  async getWatchlist() {
+    return this.call('/api/watchlist');
+  },
+
+  // 新增追蹤股票
+  async addWatch(code, name) {
+    return this.call('/api/watchlist', 'POST', { code, name });
+  },
+
+  // 取得模擬交易
+  async getSimTrades() {
+    return this.call('/api/sim_trades');
+  },
+
+  // 更新模擬交易結果
+  async updateTrade(id, exitPrice, entryPrice, exitReason, entryDate) {
+    const holdDays = Math.round((Date.now() - new Date(entryDate).getTime()) / 86400000);
+    const pnlPct   = +((exitPrice - entryPrice) / entryPrice * 100).toFixed(2);
+    const status   = pnlPct >= 0 ? 'win' : 'loss';
+    return this.call(`/api/sim_trades/${id}`, 'PUT', {
+      exit_price: exitPrice, exit_reason: exitReason,
+      pnl_pct: pnlPct, status, hold_days: holdDays
+    });
+  },
+
+  // 取得統計
+  async getStats() {
+    return this.call('/api/stats');
+  },
+};
+
+// ══════════════════════════════════════════
+// 批次分析系統
+// ══════════════════════════════════════════
+const BatchAnalysis = {
+  _running: false,
+  _cancelled: false,
+  _results: [],
+
+  async run(personas = null) {
+    if (this._running) { UI.toast('批次分析進行中...'); return; }
+    if (!State.settings.apiKey?.startsWith('sk-')) {
+      UI.toast('請先填入 OpenAI API Key', 'error'); return;
+    }
+
+    this._running   = true;
+    this._cancelled = false;
+    this._results   = [];
+
+    const wlRes = await Backend.getWatchlist();
+    const stocks = wlRes?.data || [];
+    if (!stocks.length) { UI.toast('追蹤清單是空的', 'error'); this._running=false; return; }
+
+    const usePersonas = personas || ['guardian','hunter','oracle','sensei'];
+    const total = stocks.length * usePersonas.length;
+    let done = 0;
+
+    BatchUI.show(total);
+    UI.toast(`開始批次分析：${stocks.length} 支股票 × ${usePersonas.length} 種人格`);
+
+    for (const stock of stocks) {
+      if (this._cancelled) break;
+      for (const persona of usePersonas) {
+        if (this._cancelled) break;
+        done++;
+        BatchUI.update(done, total, stock.code, stock.name, persona);
+
+        try {
+          // 暫時切換人格
+          const origPersona = State.settings.persona;
+          State.settings.persona = persona;
+
+          const price = await API.getPrice(stock.code);
+          if (!price) { State.settings.persona = origPersona; continue; }
+
+          const [fund, hist, news, industry] = await Promise.allSettled([
+            API.getFundamentals(stock.code),
+            API.getHistory(stock.code, 65),
+            API.getNews(stock.code, price.name || stock.code),
+            API.getIndustry(stock.code),
+          ]).then(r => r.map(x => x.value || null));
+
+          const closes = hist?.map(d => d.close) || [];
+          const rsi  = closes.length >= 15 ? Indicators.rsi(closes)  : null;
+          const macd = closes.length >= 35 ? Indicators.macd(closes) : null;
+          const ma20 = Indicators.ma(closes, 20);
+          const ma60 = Indicators.ma(closes, 60);
+
+          const sys = AIAnalysis.buildSystemPrompt();
+          const usr = AIAnalysis.buildUserPrompt({ price, fund, rsi, macd, ma20, ma60, news, code: stock.code, hist });
+          const { result: ai, usage } = await AIAnalysis.callAPI(usr, sys, State.settings.model);
+
+          // 上傳到後端
+          await Backend.saveAnalysis(stock.code, price.name, persona, State.settings.model, ai, price.price);
+          Cost.record(price.name || stock.code, usage, State.settings.model);
+
+          this._results.push({ code: stock.code, name: price.name, persona, direction: ai?.direction, confidence: ai?.confidence_score });
+
+          State.settings.persona = origPersona;
+
+          // 每筆間隔 2 秒，避免打爆 API
+          await new Promise(r => setTimeout(r, 2000));
+
+        } catch(e) {
+          console.warn('[Batch]', stock.code, persona, e.message);
+        }
+      }
+    }
+
+    this._running = false;
+    BatchUI.done(this._results);
+    Sound.success(); Haptic.success();
+    UI.toast(`✓ 批次分析完成！${this._results.length} 筆`);
+  },
+
+  cancel() {
+    this._cancelled = true;
+    this._running   = false;
+    BatchUI.hide();
+    UI.toast('已取消批次分析');
+  },
+};
+
+// ══ 批次分析 UI ══
+const BatchUI = {
+  show(total) {
+    const el = document.getElementById('batchOverlay');
+    if (el) el.className = 'overlay open';
+    this.update(0, total, '', '', '');
+  },
+  hide() {
+    const el = document.getElementById('batchOverlay');
+    if (el) el.className = 'overlay';
+  },
+  update(done, total, code, name, persona) {
+    const pName = { guardian:'🛡️ 穩健守護', hunter:'🎯 成長獵手', oracle:'📖 價值導師', sensei:'📐 技術大師' };
+    const pct = Math.round(done/total*100);
+    const fill = document.getElementById('batchFill');
+    const lbl  = document.getElementById('batchLbl');
+    const pctEl = document.getElementById('batchPct');
+    if (fill)  fill.style.width  = pct + '%';
+    if (lbl)   lbl.textContent   = done < total ? `${name||code} · ${pName[persona]||persona}` : '完成！';
+    if (pctEl) pctEl.textContent = `${done}/${total}`;
+  },
+  done(results) {
+    const wins = results.filter(r => ['買進','強力買進'].includes(r.direction)).length;
+    const lbl  = document.getElementById('batchLbl');
+    if (lbl) lbl.textContent = `完成 ${results.length} 筆 · ${wins} 個買進信號`;
+    setTimeout(() => this.hide(), 3000);
+  },
+};
+
+
+// ══ 統計頁 UI ══
+const BackendStatsUI = {
+  async refresh() {
+    UI.toast('更新統計中...');
+    const res = await Backend.getStats();
+    if (!res?.ok) { UI.toast('更新失敗', 'error'); return; }
+    this.renderOverview(res.data);
+    this.renderPersona(res.data.byPersona);
+    this.renderByCode(res.data.byCode);
+    UI.toast('✓ 統計已更新');
+  },
+
+  renderOverview(s) {
+    const el = document.getElementById('statsOverviewContent');
+    if (!el) return;
+    el.innerHTML = `
+      <div class="stats-grid">
+        <div class="stats-box">
+          <div class="stats-val" style="color:var(--acc)">${s.total}</div>
+          <div class="stats-key">總分析筆數</div>
+        </div>
+        <div class="stats-box">
+          <div class="stats-val" style="color:${+s.winRate>=50?'var(--up)':'var(--dn)'}">${s.winRate}%</div>
+          <div class="stats-key">整體勝率</div>
+        </div>
+        <div class="stats-box">
+          <div class="stats-val" style="color:${+s.avgPnl>=0?'var(--up)':'var(--dn)'}">${+s.avgPnl>=0?'+':''}${s.avgPnl}%</div>
+          <div class="stats-key">平均報酬</div>
+        </div>
+        <div class="stats-box">
+          <div class="stats-val" style="color:var(--up)">${s.wins}</div>
+          <div class="stats-key">獲利筆數</div>
+        </div>
+        <div class="stats-box">
+          <div class="stats-val" style="color:var(--dn)">${s.losses}</div>
+          <div class="stats-key">虧損筆數</div>
+        </div>
+        <div class="stats-box">
+          <div class="stats-val" style="color:var(--blue)">${s.openCount}</div>
+          <div class="stats-key">進行中</div>
+        </div>
+      </div>
+      <div style="font-size:.67rem;color:var(--txt3);text-align:right">
+        更新時間：${new Date(s.updatedAt).toLocaleString('zh-TW')}
+      </div>`;
+  },
+
+  renderPersona(byPersona) {
+    const el = document.getElementById('statsPersonaContent');
+    if (!el || !byPersona) return;
+    const pName = { guardian:'🛡️ 穩健守護', hunter:'🎯 成長獵手', oracle:'📖 價值導師', sensei:'📐 技術大師', custom:'✏️ 自訂' };
+    const entries = Object.entries(byPersona).sort((a,b) => +b[1].winRate - +a[1].winRate);
+    if (!entries.length) { el.innerHTML = '<div style="color:var(--txt3);font-size:.8rem">尚無足夠資料</div>'; return; }
+    el.innerHTML = entries.map(([pid, s]) => `
+      <div class="persona-bar-row">
+        <div class="persona-bar-label">${pName[pid]||pid}</div>
+        <div class="persona-bar-track">
+          <div class="persona-bar-fill" style="width:${s.winRate}%;background:${+s.winRate>=50?'var(--up)':'var(--dn)'}"></div>
+        </div>
+        <div style="font-family:var(--mono);font-size:.8rem;font-weight:700;width:36px;text-align:right;color:${+s.winRate>=50?'var(--up)':'var(--dn)'}">${s.winRate}%</div>
+        <div style="font-size:.73rem;color:var(--txt3);width:32px">${s.total}筆</div>
+        <div style="font-size:.73rem;font-family:var(--mono);color:${+s.avgPnl>=0?'var(--up)':'var(--dn)'}">${+s.avgPnl>=0?'+':''}${s.avgPnl}%</div>
+      </div>`).join('');
+  },
+
+  renderByCode(byCode) {
+    const el = document.getElementById('statsCodeContent');
+    if (!el || !byCode) return;
+    const entries = Object.entries(byCode).sort((a,b) => +b[1].win/+b[1].total - +a[1].win/+a[1].total);
+    if (!entries.length) { el.innerHTML = '<div style="color:var(--txt3);font-size:.8rem">尚無足夠資料</div>'; return; }
+    el.innerHTML = entries.map(([code, s]) => {
+      const wr = (s.win/s.total*100).toFixed(0);
+      return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;cursor:pointer" onclick="App.askAndRun('${code}')">
+        <span style="font-family:var(--mono);font-weight:700;color:var(--acc);width:40px">${code}</span>
+        <span style="font-size:.8rem;color:var(--txt2);width:60px">${TW_NAMES[code]||''}</span>
+        <div class="persona-bar-track">
+          <div class="persona-bar-fill" style="width:${wr}%;background:${+wr>=50?'var(--up)':'var(--dn)'}"></div>
+        </div>
+        <span style="font-family:var(--mono);font-size:.8rem;font-weight:700;color:${+wr>=50?'var(--up)':'var(--dn)'};width:36px">${wr}%</span>
+        <span style="font-size:.73rem;color:var(--txt3)">${s.total}筆</span>
+      </div>`;
+    }).join('');
+  },
+
+  async loadWatchlist() {
+    const el = document.getElementById('statsWatchlistContent');
+    if (!el) return;
+    const res = await Backend.getWatchlist();
+    if (!res?.ok || !res.data?.length) {
+      el.innerHTML = '<div style="color:var(--txt3);font-size:.8rem">無追蹤股票</div>';
+      return;
+    }
+    el.innerHTML = res.data.map(w => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--bdr)">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-family:var(--mono);font-weight:700;color:var(--acc)">${w.code}</span>
+          <span style="font-size:.87rem;color:var(--txt2)">${w.name}</span>
+        </div>
+        <span style="font-size:.67rem;color:var(--txt3)">${new Date(w.added_at).toLocaleDateString('zh-TW')}</span>
+      </div>`).join('');
+  },
+
+  // 同步後端模擬交易到本地
+  syncTrades(trades) {
+    // 用後端資料更新本地統計
+    console.log('[Backend] 同步', trades.length, '筆模擬交易');
+  },
+};
+
 // ══════════════════════════════════════════
 // ⑪ 渲染結果
 // ══════════════════════════════════════════
@@ -3310,6 +3685,13 @@ const App = {
       // 儲存快取
       const cacheHtml = UI.$('result').innerHTML;
       Cache.save(code, cacheHtml);
+      // 上傳到後端 D1（不等待，背景執行）
+      if (ai?.direction) {
+        Backend.saveAnalysis(
+          code, price.name, State.settings.persona,
+          State.settings.model, ai, price.price
+        ).then(r => r?.ok && console.log('[Backend] 已上傳分析', code));
+      }
       // 自動記錄模擬交易（只有 AI 買進信號才記）
       if (ai?.direction && price?.price) {
         SimTrade.record(code, price.name || code, price.price, ai, State.settings.persona);
@@ -3482,7 +3864,7 @@ const Gestures = {
   _touchStartY: 0,
   _touchStartX: 0,
   _pulling: false,
-  _tabs: ['home', 'report', 'log'],
+  _tabs: ['home', 'report', 'log', 'stats'],
 
   init() {
     const main = document.querySelector('.main');
@@ -3603,6 +3985,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // 防 iPhone 雙擊縮放
   document.querySelectorAll('input').forEach(el => { el.style.fontSize = '16px'; });
 });
+
 
 
 
