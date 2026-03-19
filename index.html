@@ -1558,7 +1558,7 @@ const API = {
     return null;
   },
 
-  FUGLE_KEY: 'c5f89bfc-0280-4157-a400-c32a482a91c8',
+  FUGLE_KEY: '',  // Key 已移至 Cloudflare Worker Secrets，由 Worker 代帶
 
   async getPrice(code, onTry) {
     const name = TW_NAMES[code];
@@ -1568,9 +1568,9 @@ const API = {
     log('Fugle 即時');
     try {
       const url = `https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/${code}`;  // Fugle v1.0
+      // 告訴 Worker 這是 Fugle 請求，Worker 會自動帶上 Secret Key
       const raw = await this.fetchWithHeaders(url, {
-        'X-API-KEY': this.FUGLE_KEY,
-        'Accept': 'application/json',
+        'X-Fugle-Request': '1',
       });
       // Fugle 回傳結構：直接在根層或 data 子層
       if (raw) {
