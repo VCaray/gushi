@@ -689,7 +689,7 @@ body.tab-log    .header .logo { flex: 1; }
         </svg>
       </div>
       <div class="logo-text-wrap">
-        <div class="logo-name">股<em>識</em> <span style="font-size:.55rem;color:var(--txt3);font-family:var(--mono);font-weight:400;letter-spacing:0;vertical-align:middle">v0.10</span></div>
+        <div class="logo-name">股<em>識</em> <span style="font-size:.55rem;color:var(--txt3);font-family:var(--mono);font-weight:400;letter-spacing:0;vertical-align:middle">v0.11</span></div>
         <div class="logo-sub" id="logoSub">
           <span class="logo-persona-dot"></span>
           <span id="logoSubText">台股 AI 分析助理</span>
@@ -1572,10 +1572,11 @@ const API = {
       const raw = await this.fetchWithHeaders(url, {
         'X-Fugle-Request': '1',
       });
-      // Fugle 回傳結構：直接在根層或 data 子層
-      if (raw) {
-        const q = raw.data || raw;
-        const price = +(q.closePrice || q.lastPrice || q.referencePrice || 0);
+      // Fugle 回傳：欄位直接在根層
+      // lastPrice=最新成交, closePrice=收盤, total.tradeVolume=成交量(張)
+      if (raw && (raw.lastPrice || raw.closePrice)) {
+        const q = raw;
+        const price = +(q.lastPrice || q.closePrice || q.referencePrice || 0);
         const prev  = +(q.previousClose || q.referencePrice || price);
         if (price > 0) {
           log('✓ Fugle 即時');
@@ -1584,7 +1585,7 @@ const API = {
             open:  +(q.openPrice  || price),
             high:  +(q.highPrice  || price),
             low:   +(q.lowPrice   || price),
-            vol:   Math.round((q.tradeVolume || 0) / 1000), // 股→張
+            vol:   +(q.total?.tradeVolume || 0), // Fugle 已是張
             chg:   prev ? (((price-prev)/prev)*100).toFixed(2) : '0.00',
             name:  TW_NAMES[code] || q.name || name || code,
             code,  _src: 'Fugle 即時',
