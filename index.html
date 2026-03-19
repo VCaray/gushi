@@ -1558,109 +1558,153 @@ const API = {
     return null;
   },
 
+  FUGLE_KEY: 'YzVmODliZmMtMDI4MC00MTU3LWE0MDAtYzMyYTQ4MmE5MWM4IDYwNGJlZmI3LWU1MTktNGJmOS1iODUyLTdjYzA3N2M0NmNjMw==',
+
   async getPrice(code, onTry) {
     const name = TW_NAMES[code];
     const log = s => { onTry?.(s); console.log('[Price]', s); };
 
-    // Yahoo Finance v8
-    log('Yahoo Finance');
+    // ── 來源1：Fugle 即時行情（最準確）──
+    log('Fugle 即時');
     try {
-      const d = await this.fetch(`https://query2.finance.yahoo.com/v8/finance/chart/${code}.TW?interval=1d&range=5d`);
-      const res = d?.chart?.result?.[0];
-      if (res?.meta) {
-        const m = res.meta;
-        const closes = (res.indicators?.quote?.[0]?.close || []).filter(Boolean);
-        const cur = m.regularMarketPrice || closes.at(-1);
-        const prev = m.chartPreviousClose || m.previousClose || closes.at(-2) || cur;
-        if (cur > 0) {
-          log('✓ Yahoo v8');
-          return { price: +cur.toFixed(2), open: +(m.regularMarketOpen || cur).toFixed(2),
-            high: +(m.regularMarketDayHigh || cur).toFixed(2), low: +(m.regularMarketDayLow || cur).toFixed(2),
-            prev: +(prev || cur).toFixed(2), vol: m.regularMarketVolume || 0,
-            chg: prev ? (((cur - prev) / prev) * 100).toFixed(2) : '0.00',
-            name: TW_NAMES[code] || m.longName || m.shortName || name || code, code, _src: 'Yahoo Finance', _src_url: `https://tw.stock.yahoo.com/quote/${code}` };
+      const url = `https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/${code}`;
+      const raw = await this.fetchWithHeaders(url, {
+        'X-API-KEY': this.FUGLE_KEY,
+        'Accept': 'application/json',
+      });
+      if (raw?.data) {
+        const q = raw.data;
+        const price = +(q.closePrice || q.lastPrice || q.referencePrice || 0);
+        const prev  = +(q.previousClose || q.referencePrice || price);
+        if (price > 0) {
+          log('✓ Fugle 即時');
+          return {
+            price, prev,
+            open:  +(q.openPrice  || price),
+            high:  +(q.highPrice  || price),
+            low:   +(q.lowPrice   || price),
+            vol:   Math.round((q.tradeVolume || 0) / 1000), // 股→張
+            chg:   prev ? (((price-prev)/prev)*100).toFixed(2) : '0.00',
+            name:  TW_NAMES[code] || q.name || name || code,
+            code,  _src: 'Fugle 即時',
+            _src_url: `https://tw.stock.yahoo.com/quote/${code}`,
+          };
         }
       }
-    } catch (e) { log('✗ Yahoo: ' + e.message); }
+    } catch(e) { log('✗ Fugle: ' + e.message); }
 
-    // Yahoo Finance v10
-    log('Yahoo v10');
+    // ── 來源2：TWSE 即時（上市）──
+    log('TWSE 即時');
     try {
-      const d = await this.fetch(`https://query1.finance.yahoo.com/v10/finance/quoteSummary/${code}.TW?modules=price`);
-      const p = d?.quoteSummary?.result?.[0]?.price;
-      if (p?.regularMarketPrice?.raw > 0) {
-        const cur = p.regularMarketPrice.raw, prev = p.regularMarketPreviousClose?.raw || cur;
-        log('✓ Yahoo v10');
-        return { price: +cur.toFixed(2), open: +(p.regularMarketOpen?.raw || cur).toFixed(2),
-          high: +(p.regularMarketDayHigh?.raw || cur).toFixed(2), low: +(p.regularMarketDayLow?.raw || cur).toFixed(2),
-          prev: +prev.toFixed(2), vol: p.regularMarketVolume?.raw || 0,
-          chg: prev ? (((cur - prev) / prev) * 100).toFixed(2) : '0.00',
-          name: TW_NAMES[code] || p.longName || p.shortName || name || code, code, _src: 'Yahoo v10' };
+      const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_${code}.tw&json=1&delay=0`;
+      const d2 = await this.fetch(url);
+      const m = d2?.msgArray?.[0];
+      if (m?.z && m.z !== '-' && +m.z > 0) {
+        const price = +m.z, prev = +m.y || price;
+        log('✓ TWSE 即時');
+        return {
+          price, prev,
+          open: +m.o || price, high: +m.h || price, low: +m.l || price,
+          vol:  Math.round((+m.v || 0) / 1), // TWSE 已是張
+          chg:  prev ? (((price-prev)/prev)*100).toFixed(2) : '0.00',
+          name: TW_NAMES[code] || m.n || name || code,
+          code, _src: 'TWSE 即時',
+          _src_url: `https://tw.stock.yahoo.com/quote/${code}`,
+        };
       }
-    } catch (e) { log('✗ Yahoo v10: ' + e.message); }
+    } catch(e) { log('✗ TWSE即時: ' + e.message); }
 
-    // TWSE 每日收盤
+    // ── 來源3：TWSE 即時（上櫃）──
+    log('TWSE 上櫃');
+    try {
+      const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=otc_${code}.tw&json=1&delay=0`;
+      const d2 = await this.fetch(url);
+      const m = d2?.msgArray?.[0];
+      if (m?.z && m.z !== '-' && +m.z > 0) {
+        const price = +m.z, prev = +m.y || price;
+        log('✓ TWSE 上櫃');
+        return {
+          price, prev,
+          open: +m.o || price, high: +m.h || price, low: +m.l || price,
+          vol:  Math.round(+m.v || 0),
+          chg:  prev ? (((price-prev)/prev)*100).toFixed(2) : '0.00',
+          name: TW_NAMES[code] || m.n || name || code,
+          code, _src: 'TWSE 上櫃',
+          _src_url: `https://tw.stock.yahoo.com/quote/${code}`,
+        };
+      }
+    } catch(e) { log('✗ TWSE上櫃: ' + e.message); }
+
+    // ── 來源4：TWSE 每日收盤（盤後備援）──
     log('TWSE 收盤');
     try {
       const today = new Date();
-      const ds = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2,'0')}01`;
-      const d = await this.fetch(`https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=${ds}&stockNo=${code}`);
-      if (d?.data?.length) {
-        const last = d.data.at(-1);
-        const price = +last[6].replace(/,/g, '');
-        const prev = d.data.length > 1 ? +d.data.at(-2)[6].replace(/,/g, '') : price;
+      const ds = `${today.getFullYear()}${String(today.getMonth()+1).padStart(2,'0')}01`;
+      const d2 = await this.fetch(`https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=${ds}&stockNo=${code}`);
+      if (d2?.data?.length) {
+        const last = d2.data.at(-1);
+        const price = +last[6].replace(/,/g,'');
+        const prev  = d2.data.length > 1 ? +d2.data.at(-2)[6].replace(/,/g,'') : price;
         if (price > 0) {
           log('✓ TWSE 收盤');
-          return { price, open: +last[3].replace(/,/g,''), high: +last[4].replace(/,/g,''),
-            low: +last[5].replace(/,/g,''), prev, vol: +last[2].replace(/,/g,''),
-            chg: prev ? (((price - prev) / prev) * 100).toFixed(2) : '0.00',
-            name: name || code, code, _src: 'TWSE', _src_url: `https://www.twse.com.tw/zh/stock/code/${code}` };
+          return {
+            price, prev,
+            open: +last[3].replace(/,/g,''), high: +last[4].replace(/,/g,''), low: +last[5].replace(/,/g,''),
+            vol:  +last[2].replace(/,/g,''),
+            chg:  prev ? (((price-prev)/prev)*100).toFixed(2) : '0.00',
+            name: TW_NAMES[code] || name || code,
+            code, _src: 'TWSE 收盤',
+            _src_url: `https://www.twse.com.tw/zh/stock/code/${code}`,
+          };
         }
       }
-    } catch (e) { log('✗ TWSE: ' + e.message); }
+    } catch(e) { log('✗ TWSE收盤: ' + e.message); }
 
-    // TWSE 即時（上市 + 上櫃）
-    for (const ex of ['tse', 'otc']) {
-      log(`TWSE 即時 ${ex}`);
-      try {
-        const d = await this.fetch(`https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${ex}_${code}.tw&json=1&delay=0`);
-        const m = d?.msgArray?.[0];
-        if (m?.y && +m.y > 0) {
-          const price = +(m.z && m.z !== '-' ? m.z : m.y), prev = +m.y;
-          log(`✓ TWSE ${ex}`);
-          return { price, open: +m.o || price, high: +m.h || price, low: +m.l || price,
-            prev, vol: +m.v || 0, chg: prev ? (((price - prev) / prev) * 100).toFixed(2) : '0.00',
-            name: m.n || name || code, code, _src: `TWSE ${ex}` };
-        }
-      } catch (e) { log(`✗ TWSE ${ex}: ` + e.message); }
-    }
-
-    // ── 備援：Yahoo Finance 台灣（不同 endpoint）──
-    log('Yahoo Finance 備援');
+    // ── 來源5：Yahoo Finance（最後備援）──
+    log('Yahoo Finance');
     try {
-      const urls = [
-        `https://query1.finance.yahoo.com/v8/finance/chart/${code}.TW?interval=1d&range=1d`,
-        `https://query2.finance.yahoo.com/v8/finance/chart/${code}.TWO?interval=1d&range=1d`,
-      ];
-      for (const url of urls) {
-        const d = await this.fetch(url);
-        const res = d?.chart?.result?.[0];
-        if (res?.meta?.regularMarketPrice > 0) {
-          const m = res.meta;
-          const cur = m.regularMarketPrice;
-          const prev = m.chartPreviousClose || cur;
-          log('✓ Yahoo 備援');
-          return { price: +cur.toFixed(2), open: +(m.regularMarketOpen||cur).toFixed(2),
-            high: +(m.regularMarketDayHigh||cur).toFixed(2), low: +(m.regularMarketDayLow||cur).toFixed(2),
-            prev: +prev.toFixed(2), vol: m.regularMarketVolume||0,
-            chg: prev ? (((cur-prev)/prev)*100).toFixed(2) : '0.00',
-            name: TW_NAMES[code] || m.shortName || code, code,
-            _src: 'Yahoo Finance', _src_url: `https://tw.stock.yahoo.com/quote/${code}` };
+      const d2 = await this.fetch(`https://query2.finance.yahoo.com/v8/finance/chart/${code}.TW?interval=1d&range=5d`);
+      const res = d2?.chart?.result?.[0];
+      if (res?.meta) {
+        const m = res.meta;
+        const cur = m.regularMarketPrice || 0;
+        const prev = m.chartPreviousClose || cur;
+        if (cur > 0) {
+          log('✓ Yahoo');
+          return {
+            price: +cur.toFixed(2), prev: +prev.toFixed(2),
+            open:  +(m.regularMarketOpen||cur).toFixed(2),
+            high:  +(m.regularMarketDayHigh||cur).toFixed(2),
+            low:   +(m.regularMarketDayLow||cur).toFixed(2),
+            vol:   Math.round((m.regularMarketVolume||0)/1000), // 股→張
+            chg:   prev ? (((cur-prev)/prev)*100).toFixed(2) : '0.00',
+            name:  TW_NAMES[code] || m.shortName || name || code,
+            code,  _src: 'Yahoo Finance',
+            _src_url: `https://tw.stock.yahoo.com/quote/${code}`,
+          };
         }
       }
-    } catch(e) { log('✗ Yahoo備援: ' + e.message); }
+    } catch(e) { log('✗ Yahoo: ' + e.message); }
 
     log('✗ 全部來源失敗');
+    return null;
+  },
+
+  // 帶自訂 headers 的請求（Fugle 需要 API Key header）
+  async fetchWithHeaders(url, headers = {}) {
+    const workerUrl = `${this.WORKER}?url=${encodeURIComponent(url)}`;
+    try {
+      const r = await fetch(workerUrl, {
+        signal: AbortSignal.timeout(10000),
+        headers: { 'X-Target-Headers': JSON.stringify(headers) },
+      });
+      if (r.ok) {
+        const t = await r.text();
+        if (t && t.length > 5) {
+          try { return JSON.parse(t); } catch { return t; }
+        }
+      }
+    } catch(e) { console.warn('[fetchWithHeaders]', e.message); }
     return null;
   },
 
