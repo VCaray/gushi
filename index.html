@@ -1558,7 +1558,7 @@ const API = {
     return null;
   },
 
-  FUGLE_KEY: 'YzVmODliZmMtMDI4MC00MTU3LWE0MDAtYzMyYTQ4MmE5MWM4IDYwNGJlZmI3LWU1MTktNGJmOS1iODUyLTdjYzA3N2M0NmNjMw==',
+  FUGLE_KEY: 'c5f89bfc-0280-4157-a400-c32a482a91c8',
 
   async getPrice(code, onTry) {
     const name = TW_NAMES[code];
@@ -1567,13 +1567,14 @@ const API = {
     // ── 來源1：Fugle 即時行情（最準確）──
     log('Fugle 即時');
     try {
-      const url = `https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/${code}`;
+      const url = `https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/${code}`;  // Fugle v1.0
       const raw = await this.fetchWithHeaders(url, {
         'X-API-KEY': this.FUGLE_KEY,
         'Accept': 'application/json',
       });
-      if (raw?.data) {
-        const q = raw.data;
+      // Fugle 回傳結構：直接在根層或 data 子層
+      if (raw) {
+        const q = raw.data || raw;
         const price = +(q.closePrice || q.lastPrice || q.referencePrice || 0);
         const prev  = +(q.previousClose || q.referencePrice || price);
         if (price > 0) {
