@@ -724,7 +724,7 @@ body.tab-log    .header .logo { flex: 1; }
         </svg>
       </div>
       <div class="logo-text-wrap">
-        <div class="logo-name">股<em>識</em> <span style="font-size:.55rem;color:var(--txt3);font-family:var(--mono);font-weight:400;letter-spacing:0;vertical-align:middle">v0.15</span></div>
+        <div class="logo-name">股<em>識</em> <span style="font-size:.55rem;color:var(--txt3);font-family:var(--mono);font-weight:400;letter-spacing:0;vertical-align:middle">v0.16</span></div>
         <div class="logo-sub" id="logoSub">
           <span class="logo-persona-dot"></span>
           <span id="logoSubText">台股 AI 分析助理</span>
@@ -1836,23 +1836,36 @@ const API = {
   },
 
   async getHistory(code, days = 60) {
+    const needed = Math.max(days, 250); // 確保 MA240 有足夠資料
     try {
-      const d = await this.fetch(`https://query2.finance.yahoo.com/v8/finance/chart/${code}.TW?interval=1d&range=3mo`);
+      const range = needed > 180 ? '1y' : '3mo';
+      const d = await this.fetch(`https://query2.finance.yahoo.com/v8/finance/chart/${code}.TW?interval=1d&range=${range}`);
       const res = d?.chart?.result?.[0];
       if (res) {
-        const closes = res.indicators?.quote?.[0]?.close || [];
+        const q      = res.indicators?.quote?.[0] || {};
+        const closes = q.close  || [];
+        const highs  = q.high   || [];
+        const lows   = q.low    || [];
         const ts     = res.timestamp || [];
-        return closes.map((c, i) => ({ date: new Date(ts[i]*1000).toLocaleDateString('zh-TW'), close: c ? +c.toFixed(2) : null, vol: res.indicators?.quote?.[0]?.volume?.[i] || 0 }))
-          .filter(r => r.close != null).slice(-days);
+        return closes.map((c, i) => ({
+          date:  new Date(ts[i]*1000).toLocaleDateString('zh-TW'),
+          close: c        ? +c.toFixed(2)        : null,
+          high:  highs[i] ? +highs[i].toFixed(2) : c,
+          low:   lows[i]  ? +lows[i].toFixed(2)  : c,
+          vol:   q.volume?.[i] || 0,
+        })).filter(r => r.close != null).slice(-needed);
       }
     } catch {}
-    // TWSE fallback
+    // TWSE fallback（只有收盤價，high/low 用收盤代替）
     try {
       const today = new Date();
       const ds = `${today.getFullYear()}${String(today.getMonth()+1).padStart(2,'0')}01`;
       const d = await this.fetch(`https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=${ds}&stockNo=${code}`);
       if (d?.data?.length)
-        return d.data.slice(-days).map(r => ({ date: r[0], close: +r[6].replace(/,/g,''), vol: +r[2].replace(/,/g,'') })).filter(r => r.close > 0);
+        return d.data.slice(-days).map(r => {
+          const c = +r[6].replace(/,/g,'');
+          return { date: r[0], close: c, high: +r[4].replace(/,/g,'') || c, low: +r[5].replace(/,/g,'') || c, vol: +r[2].replace(/,/g,'') };
+        }).filter(r => r.close > 0);
     } catch {}
     return null;
   },
@@ -2025,6 +2038,95 @@ const Indicators = {
     if (closes.length < n) return null;
     return +(closes.slice(-n).reduce((a, b) => a + b) / n).toFixed(2);
   },
+
+  // KD 隨機指標（使用 hist 物件含 high/low/close；n=9）
+  kd(hist, n = 9) {
+    if (!hist || hist.length < n) return null;
+    // 計算每日 RSV（未成熟隨機值）
+    const rsv = [];
+    for (let i = n - 1; i < hist.length; i++) {
+      const slice = hist.slice(i - n + 1, i + 1);
+      const hh = Math.max(...slice.map(d => d.high || d.close));
+      const ll = Math.min(...slice.map(d => d.low  || d.close));
+      const c  = hist[i].close;
+      rsv.push(hh === ll ? 50 : ((c - ll) / (hh - ll)) * 100);
+    }
+    // 平滑 K 值（EMA 1/3）
+    let K = 50, D = 50;
+    for (const r of rsv) {
+      K = K * (2/3) + r * (1/3);
+      D = D * (2/3) + K * (1/3);
+    }
+    K = +K.toFixed(1); D = +D.toFixed(1);
+    const J = +(3*K - 2*D).toFixed(1);
+    const cross = K > D && rsv.at(-2) !== undefined
+      ? ((() => {
+          let pk = 50, pd = 50;
+          for (const r of rsv.slice(0, -1)) { pk = pk*(2/3)+r*(1/3); pd = pd*(2/3)+pk*(1/3); }
+          return pk < pd ? '黃金交叉' : null;
+        })())
+      : K < D ? ((() => {
+          let pk = 50, pd = 50;
+          for (const r of rsv.slice(0, -1)) { pk = pk*(2/3)+r*(1/3); pd = pd*(2/3)+pk*(1/3); }
+          return pk > pd ? '死亡交叉' : null;
+        })()) : null;
+    return { K, D, J, cross };
+  },
+
+  // 布林通道（n=20, 倍數=2）
+  bollinger(closes, n = 20, mult = 2) {
+    if (closes.length < n) return null;
+    const slice = closes.slice(-n);
+    const mid   = slice.reduce((a, b) => a + b) / n;
+    const std   = Math.sqrt(slice.map(v => (v - mid) ** 2).reduce((a, b) => a + b) / n);
+    const upper = +(mid + mult * std).toFixed(2);
+    const lower = +(mid - mult * std).toFixed(2);
+    const midR  = +mid.toFixed(2);
+    const bw    = +((upper - lower) / midR * 100).toFixed(1); // 帶寬%
+    const price = closes.at(-1);
+    const pct   = +((price - lower) / (upper - lower) * 100).toFixed(1); // %B 位置
+    return { upper, mid: midR, lower, bw, pct };
+  },
+
+  // 乖離率 BIAS（價格偏離均線%）
+  bias(closes, n) {
+    const maVal = this.ma(closes, n);
+    if (!maVal) return null;
+    return +((closes.at(-1) - maVal) / maVal * 100).toFixed(2);
+  },
+
+  // 威廉指標 Williams %R（n=14）
+  williamsR(hist, n = 14) {
+    if (!hist || hist.length < n) return null;
+    const slice = hist.slice(-n);
+    const hh = Math.max(...slice.map(d => d.high || d.close));
+    const ll = Math.min(...slice.map(d => d.low  || d.close));
+    const c  = hist.at(-1).close;
+    if (hh === ll) return -50;
+    return +((hh - c) / (hh - ll) * -100).toFixed(1);
+  },
+
+  // 計算所有指標（統一入口，傳入 hist 陣列）
+  calcAll(hist) {
+    if (!hist || hist.length === 0) return {};
+    const closes = hist.map(d => d.close);
+    const n = closes.length;
+    return {
+      rsi:  n >= 15  ? this.rsi(closes)        : null,
+      macd: n >= 35  ? this.macd(closes)        : null,
+      ma5:  this.ma(closes, 5),
+      ma10: this.ma(closes, 10),
+      ma20: this.ma(closes, 20),
+      ma60: this.ma(closes, 60),
+      ma120:this.ma(closes, 120),
+      ma240:this.ma(closes, 240),
+      kd:   n >= 9   ? this.kd(hist)            : null,
+      boll: n >= 20  ? this.bollinger(closes)   : null,
+      bias20: this.bias(closes, 20),
+      bias60: this.bias(closes, 60),
+      wr:   n >= 14  ? this.williamsR(hist)     : null,
+    };
+  },
 };
 
 // ══════════════════════════════════════════
@@ -2129,13 +2231,28 @@ ${detailInstructions[detail]}
   },
 
   buildUserPrompt(data) {
-    const { price, fund, rsi, macd, ma20, ma60, news, code, hist } = data;
+    const { price, fund, rsi, macd, ma5, ma10, ma20, ma60, ma120, ma240, kd, boll, bias20, bias60, wr, news, code, hist } = data;
     const frame  = FRAME_LABEL[State.settings.frame];
     const closes = hist?.map(d => d.close) || [];
     const vol5   = hist?.slice(-5).map(d => d.vol) || [];
     const avgVol = vol5.length ? Math.round(vol5.reduce((a,b)=>a+b,0)/vol5.length) : null;
     const chg5d  = closes.length >= 5 ? (((closes.at(-1) - closes.at(-6)) / closes.at(-6)) * 100).toFixed(2) : null;
     const chg20d = closes.length >= 20 ? (((closes.at(-1) - closes.at(-21)) / closes.at(-21)) * 100).toFixed(2) : null;
+
+    // 均線多空排列描述
+    const maSystem = [ma5, ma10, ma20, ma60].filter(Boolean);
+    let maDesc = '';
+    if (maSystem.length >= 2) {
+      const p = closes.at(-1);
+      const tags = [];
+      if (ma5)  tags.push(`MA5:${ma5}(${p > ma5 ? '↑' : '↓'})`);
+      if (ma10) tags.push(`MA10:${ma10}(${p > ma10 ? '↑' : '↓'})`);
+      if (ma20) tags.push(`MA20:${ma20}(${p > ma20 ? '↑' : '↓'})`);
+      if (ma60) tags.push(`MA60:${ma60}(${p > ma60 ? '↑' : '↓'})`);
+      if (ma120)tags.push(`MA120:${ma120}(${p > ma120 ? '↑' : '↓'})`);
+      if (ma240)tags.push(`MA240:${ma240}(${p > ma240 ? '↑' : '↓'})`);
+      maDesc = tags.join(' ｜ ');
+    }
 
     return `請分析以下台股資料，依照你的投資風格給出 ${frame} 的明確建議：
 
@@ -2153,11 +2270,15 @@ ${chg5d != null ? `5日漲跌：${chg5d}%` : ''} ${chg20d != null ? `｜ 20日�
 
 ═══ 技術指標 ═══
 RSI(14)：${rsi || 'N/A'}${rsi ? (rsi > 70 ? ' ⚠️超買' : rsi < 30 ? ' ⚠️超賣' : '') : ''}
-MACD：${macd?.line || 'N/A'} ｜ Signal：${macd?.signal || 'N/A'} ｜ 柱狀：${macd?.hist || 'N/A'}
-${macd?.cross ? `MACD 訊號：${macd.cross}` : ''}
-MA20：${ma20 || 'N/A'} ｜ MA60：${ma60 || 'N/A'}
+MACD：${macd?.line || 'N/A'} ｜ Signal：${macd?.signal || 'N/A'} ｜ 柱狀：${macd?.hist || 'N/A'}${macd?.cross ? ` ⚡${macd.cross}` : ''}
+KD(9)：K=${kd?.K ?? 'N/A'} D=${kd?.D ?? 'N/A'} J=${kd?.J ?? 'N/A'}${kd?.cross ? ` ⚡${kd.cross}` : ''}${kd ? (kd.K > 80 ? ' ⚠️超買' : kd.K < 20 ? ' ⚠️超賣' : '') : ''}
+Williams %R(14)：${wr ?? 'N/A'}${wr != null ? (wr < -80 ? ' ⚠️超賣區' : wr > -20 ? ' ⚠️超買區' : '') : ''}
+布林通道(20,2)：上軌${boll?.upper ?? 'N/A'} 中軌${boll?.mid ?? 'N/A'} 下軌${boll?.lower ?? 'N/A'}${boll ? ` ｜ 帶寬${boll.bw}% ｜ %B位置${boll.pct}%` : ''}
+
+均線系統（↑=股價在上方）：
+${maDesc || 'N/A'}
 ${ma20 && ma60 ? `均線排列：${ma20 > ma60 ? '多頭（MA20 > MA60）' : '空頭（MA20 < MA60）'}` : ''}
-${price.price && ma20 ? `價格位置：${price.price > ma20 ? '站上' : '跌破'} MA20` : ''}
+乖離率：MA20乖離${bias20 ?? 'N/A'}% ｜ MA60乖離${bias60 ?? 'N/A'}%
 
 ═══ 近期新聞（最新5則） ═══
 ${news.slice(0,5).map((n,i) => `${i+1}. ${n.title}`).join('\n') || '無相關新聞'}
@@ -2946,14 +3067,11 @@ const BatchAnalysis = {
             API.getIndustry(stock.code),
           ]).then(r => r.map(x => x.value || null));
 
-          const closes = hist?.map(d => d.close) || [];
-          const rsi  = closes.length >= 15 ? Indicators.rsi(closes)  : null;
-          const macd = closes.length >= 35 ? Indicators.macd(closes) : null;
-          const ma20 = Indicators.ma(closes, 20);
-          const ma60 = Indicators.ma(closes, 60);
+          const indsB = Indicators.calcAll(hist);
+          const { rsi, macd, ma5, ma10, ma20, ma60, ma120, ma240, kd, boll, bias20, bias60, wr } = indsB;
 
           const sys = AIAnalysis.buildSystemPrompt();
-          const usr = AIAnalysis.buildUserPrompt({ price, fund, rsi, macd, ma20, ma60, news, code: stock.code, hist });
+          const usr = AIAnalysis.buildUserPrompt({ price, fund, rsi, macd, ma5, ma10, ma20, ma60, ma120, ma240, kd, boll, bias20, bias60, wr, news, code: stock.code, hist });
           const { result: ai, usage } = await AIAnalysis.callAPI(usr, sys, State.settings.model);
 
           // 上傳到後端
@@ -3130,7 +3248,7 @@ const BackendStatsUI = {
 // ⑪ 渲染結果
 // ══════════════════════════════════════════
 const Renderer = {
-  render({ price, fund, hist, news, industry, rsi, macd, ma20, ma60, ai, code, peers }) {
+  render({ price, fund, hist, news, industry, rsi, macd, ma5, ma10, ma20, ma60, ma120, ma240, kd, boll, bias20, bias60, wr, ai, code, peers }) {
     const isUp = +price.chg >= 0;
     const dir  = ai?.direction || '觀望';
     const cls  = (dir === '買進' || dir === '強力買進') ? 'bull' : (dir === '賣出' || dir === '強力賣出') ? 'bear' : 'neutral';
@@ -3140,7 +3258,7 @@ const Renderer = {
     UI.$('result').innerHTML = `
       ${this._priceCard(price, fund, hist, industry, code, isUp)}
       ${ai ? this._aiCard(ai, dir, cls, icon, confCls) : this._noAICard()}
-      ${this._indicatorCard(price, rsi, macd, ma20, ma60)}
+      ${this._indicatorCard(price, rsi, macd, ma5, ma10, ma20, ma60, ma120, ma240, kd, boll, bias20, bias60, wr)}
       ${peers?.length ? this._peersCard(peers, industry) : ''}
       ${this._newsCard(news, ai?.news_analysis)}
       <div style="font-size:11px;color:var(--txt3);text-align:center;padding:16px 0;line-height:1.8">
@@ -3360,32 +3478,106 @@ const Renderer = {
     </div>`;
   },
 
-  _indicatorCard(price, rsi, macd, ma20, ma60) {
-    const hasAny = rsi != null || macd || ma20;
+  _indicatorCard(price, rsi, macd, ma5, ma10, ma20, ma60, ma120, ma240, kd, boll, bias20, bias60, wr) {
+    const p = price.price;
+    const hasAny = rsi != null || macd || ma20 || kd || boll;
+
+    // 均線 badge 顏色
+    const maColor = (v) => v ? (p > v ? 'var(--up)' : 'var(--dn)') : 'var(--txt3)';
+    const maVal   = (v, label) => v
+      ? `<span style="font-size:11px;margin-right:4px">
+           <span style="color:var(--txt3)">${label}</span>
+           <span style="color:${maColor(v)};font-weight:600">${v}</span>
+         </span>`
+      : '';
+
+    // KD 顏色
+    const kdColor = kd ? (kd.K > 80 ? 'var(--dn)' : kd.K < 20 ? 'var(--up)' : 'var(--txt)') : '';
+
+    // 布林通道 %B 進度條
+    const bollBar = boll ? (() => {
+      const pct = Math.max(0, Math.min(100, boll.pct));
+      const c   = pct > 80 ? 'var(--dn)' : pct < 20 ? 'var(--up)' : 'var(--acc)';
+      return `<div style="position:relative;height:5px;background:var(--bdr);border-radius:3px;margin-top:4px;width:100%">
+        <div style="position:absolute;left:0;top:0;height:100%;width:${pct}%;background:${c};border-radius:3px;transition:.3s"></div>
+        <div style="position:absolute;left:33.3%;top:-2px;height:9px;width:1px;background:var(--txt3);opacity:.5"></div>
+        <div style="position:absolute;left:66.6%;top:-2px;height:9px;width:1px;background:var(--txt3);opacity:.5"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--txt3);margin-top:2px">
+        <span>下軌 ${boll.lower}</span><span>中 ${boll.mid}</span><span>上軌 ${boll.upper}</span>
+      </div>`;
+    })() : '';
+
+    // Williams %R 顏色
+    const wrColor = wr != null ? (wr < -80 ? 'var(--up)' : wr > -20 ? 'var(--dn)' : 'var(--txt)') : '';
+
     return `
     <div class="card fade-up">
-      <div class="card-hdr"><div class="card-ttl">📐 技術指標</div><span class="badge badge-gray">Wilder RSI</span></div>
+      <div class="card-hdr">
+        <div class="card-ttl">📐 技術指標</div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap">
+          ${kd?.cross ? `<span class="badge ${kd.cross === '黃金交叉' ? 'badge-green' : 'badge-red'}">${kd.cross}</span>` : ''}
+          ${macd?.cross ? `<span class="badge ${macd.cross === '黃金交叉' ? 'badge-green' : 'badge-red'}">${macd.cross}</span>` : ''}
+        </div>
+      </div>
+
+      ${!hasAny ? '<div style="font-size:13px;color:var(--txt3);padding:8px 0">K線數據不足（需至少 20 個交易日）</div>' : ''}
+
       ${rsi != null ? `<div class="ind-row">
         <div class="ind-key">RSI (14)</div>
         <div class="ind-val" style="color:${rsi > 70 ? 'var(--dn)' : rsi < 30 ? 'var(--up)' : 'var(--txt)'}">
           ${rsi} <span style="font-size:11px;opacity:.7">${rsi > 70 ? '超買' : rsi < 30 ? '超賣' : '中性'}</span>
         </div>
       </div>` : ''}
+
+      ${kd ? `<div class="ind-row">
+        <div class="ind-key">KD (9)</div>
+        <div class="ind-val" style="color:${kdColor}">
+          K <b>${kd.K}</b> &nbsp;D <b>${kd.D}</b> &nbsp;J <b>${kd.J}</b>
+          <span style="font-size:11px;opacity:.7;margin-left:4px">${kd.K > 80 ? '超買' : kd.K < 20 ? '超賣' : '中性'}</span>
+        </div>
+      </div>` : ''}
+
       ${macd ? `<div class="ind-row">
         <div class="ind-key">MACD (12,26,9)</div>
         <div class="ind-val">
-          <span style="color:${macd.hist > 0 ? 'var(--up)' : 'var(--dn)'}">${macd.line}</span>
-          ${macd.cross ? `<span class="badge ${macd.cross === '黃金交叉' ? 'badge-green' : 'badge-red'}" style="margin-left:6px">${macd.cross}</span>` : ''}
+          <span style="color:${macd.hist > 0 ? 'var(--up)' : 'var(--dn)'}">DIF ${macd.line}</span>
+          <span style="color:var(--txt3);font-size:11px;margin:0 4px">|</span>
+          <span style="font-size:11px">DEA ${macd.signal}</span>
+          <span style="font-size:11px;margin-left:4px;color:${macd.hist > 0 ? 'var(--up)' : 'var(--dn)'}">柱 ${macd.hist}</span>
         </div>
       </div>` : ''}
-      ${ma20 ? `<div class="ind-row">
-        <div class="ind-key">均線排列</div>
-        <div class="ind-val">
-          <span style="color:${price.price > ma20 ? 'var(--up)' : 'var(--dn)'}">${price.price > ma20 ? '多頭' : '空頭'}</span>
-          ${ma20 && ma60 ? `<span class="badge ${ma20 > ma60 ? 'badge-green' : 'badge-red'}" style="margin-left:6px">${ma20 > ma60 ? '黃金排列' : '死亡排列'}</span>` : ''}
+
+      ${wr != null ? `<div class="ind-row">
+        <div class="ind-key">Williams %R (14)</div>
+        <div class="ind-val" style="color:${wrColor}">
+          ${wr} <span style="font-size:11px;opacity:.7">${wr < -80 ? '超賣' : wr > -20 ? '超買' : '中性'}</span>
         </div>
       </div>` : ''}
-      ${!hasAny ? '<div style="font-size:13px;color:var(--txt3);padding:8px 0">K線數據不足（需至少 35 個交易日）</div>' : ''}
+
+      ${boll ? `<div class="ind-row" style="flex-direction:column;align-items:flex-start;gap:4px">
+        <div style="display:flex;justify-content:space-between;width:100%">
+          <div class="ind-key">布林通道 (20,2)</div>
+          <div style="font-size:11px;color:var(--txt3)">帶寬 ${boll.bw}% ｜ %B ${boll.pct}%</div>
+        </div>
+        ${bollBar}
+      </div>` : ''}
+
+      ${(ma5 || ma10 || ma20 || ma60) ? `<div class="ind-row" style="flex-direction:column;align-items:flex-start;gap:6px">
+        <div class="ind-key">均線系統</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:2px">
+          ${maVal(ma5,  'MA5')}
+          ${maVal(ma10, 'MA10')}
+          ${maVal(ma20, 'MA20')}
+          ${maVal(ma60, 'MA60')}
+          ${maVal(ma120,'MA120')}
+          ${maVal(ma240,'MA240')}
+        </div>
+        ${ma20 && ma60 ? `<div style="font-size:11px">
+          <span class="badge ${ma20 > ma60 ? 'badge-green' : 'badge-red'}" style="font-size:10px">${ma20 > ma60 ? '黃金排列' : '死亡排列'}</span>
+          <span style="color:var(--txt3);margin-left:6px">乖離率 MA20: <span style="color:${(bias20||0) > 0 ? 'var(--up)' : 'var(--dn)'}">${bias20 ?? 'N/A'}%</span> ｜ MA60: <span style="color:${(bias60||0) > 0 ? 'var(--up)' : 'var(--dn)'}">${bias60 ?? 'N/A'}%</span></span>
+        </div>` : ''}
+      </div>` : ''}
     </div>`;
   },
 
@@ -3679,12 +3871,9 @@ const App = {
 
       UI.prog(55, '計算技術指標...');
 
-      // 技術指標
-      const closes = hist?.map(d => d.close) || [];
-      const rsi  = closes.length >= 15 ? Indicators.rsi(closes)  : null;
-      const macd = closes.length >= 35 ? Indicators.macd(closes) : null;
-      const ma20 = Indicators.ma(closes, 20);
-      const ma60 = Indicators.ma(closes, 60);
+      // 技術指標（統一計算）
+      const inds = Indicators.calcAll(hist);
+      const { rsi, macd, ma5, ma10, ma20, ma60, ma120, ma240, kd, boll, bias20, bias60, wr } = inds;
 
       this._checkCancelled();
       UI.prog(65, 'AI 分析中...');
@@ -3695,7 +3884,7 @@ const App = {
       if (State.settings.apiKey?.startsWith('sk-')) {
         try {
           const sys = AIAnalysis.buildSystemPrompt();
-          const usr = AIAnalysis.buildUserPrompt({ price, fund, rsi, macd, ma20, ma60, news, code, hist });
+          const usr = AIAnalysis.buildUserPrompt({ price, fund, rsi, macd, ma5, ma10, ma20, ma60, ma120, ma240, kd, boll, bias20, bias60, wr, news, code, hist });
           const { result, usage } = await AIAnalysis.callAPI(usr, sys, State.settings.model);
           ai = result;
           Cost.record(price.name || code, usage, State.settings.model);
@@ -3705,7 +3894,7 @@ const App = {
       }
 
       UI.prog(92, '渲染結果...');
-      Renderer.render({ price, fund, hist, news, industry, rsi, macd, ma20, ma60, ai, code, peers });
+      Renderer.render({ price, fund, hist, news, industry, rsi, macd, ma5, ma10, ma20, ma60, ma120, ma240, kd, boll, bias20, bias60, wr, ai, code, peers });
       // 儲存快取
       const cacheHtml = UI.$('result').innerHTML;
       Cache.save(code, cacheHtml);
@@ -3837,11 +4026,8 @@ const App = {
     Sound.scan();
     const peers = await API.getPeers(code, industry?.industry || '').catch(() => null);
 
-    const closes = hist?.map(d => d.close) || [];
-    const rsi    = closes.length >= 15 ? Indicators.rsi(closes) : null;
-    const macd   = closes.length >= 35 ? Indicators.macd(closes) : null;
-    const ma20   = Indicators.ma(closes, 20);
-    const ma60   = Indicators.ma(closes, 60);
+    const inds2 = Indicators.calcAll(hist);
+    const { rsi, macd, ma5, ma10, ma20, ma60, ma120, ma240, kd, boll, bias20, bias60, wr } = inds2;
 
     this._checkCancelled();
     UI.prog(65, 'AI 分析中...');
@@ -3851,7 +4037,7 @@ const App = {
     if (State.settings.apiKey?.startsWith('sk-')) {
       try {
         const sys = AIAnalysis.buildSystemPrompt();
-        const usr = AIAnalysis.buildUserPrompt({ price, fund, rsi, macd, ma20, ma60, news, code, hist });
+        const usr = AIAnalysis.buildUserPrompt({ price, fund, rsi, macd, ma5, ma10, ma20, ma60, ma120, ma240, kd, boll, bias20, bias60, wr, news, code, hist });
         const { result, usage } = await AIAnalysis.callAPI(usr, sys, State.settings.model);
         ai = result;
         Cost.record(price.name || code, usage, State.settings.model);
@@ -3861,7 +4047,7 @@ const App = {
     }
 
     UI.prog(92, '渲染結果...');
-    Renderer.render({ price, fund, hist, news, industry, rsi, macd, ma20, ma60, ai, code, peers });
+    Renderer.render({ price, fund, hist, news, industry, rsi, macd, ma5, ma10, ma20, ma60, ma120, ma240, kd, boll, bias20, bias60, wr, ai, code, peers });
     const cacheHtml = UI.$('result').innerHTML;
     Cache.save(code, cacheHtml);
     Cache.renderHistory();
