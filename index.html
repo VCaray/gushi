@@ -682,6 +682,30 @@ body.tab-log    .header .logo { flex: 1; }
 .persona-bar-fill { height:100%; border-radius:4px; transition:width .5s; }
 
 </style>
+
+<script>
+// iOS PWA 鍵盤修正
+// PWA standalone 模式下輸入框需要特殊處理才能跳出鍵盤
+(function() {
+  const isIOSPWA = window.navigator.standalone === true;
+  if (!isIOSPWA) return;
+
+  document.addEventListener('touchend', function(e) {
+    const el = e.target;
+    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+      e.preventDefault();
+      el.focus();
+      // 強制觸發點擊讓鍵盤跳出
+      setTimeout(() => {
+        el.click();
+        el.focus();
+        // 捲動到輸入框位置，避免被鍵盤遮住
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 100);
+    }
+  }, { passive: false });
+})();
+</script>
 </head>
 <body>
 
@@ -700,7 +724,7 @@ body.tab-log    .header .logo { flex: 1; }
         </svg>
       </div>
       <div class="logo-text-wrap">
-        <div class="logo-name">股<em>識</em> <span style="font-size:.55rem;color:var(--txt3);font-family:var(--mono);font-weight:400;letter-spacing:0;vertical-align:middle">v0.14</span></div>
+        <div class="logo-name">股<em>識</em> <span style="font-size:.55rem;color:var(--txt3);font-family:var(--mono);font-weight:400;letter-spacing:0;vertical-align:middle">v0.15</span></div>
         <div class="logo-sub" id="logoSub">
           <span class="logo-persona-dot"></span>
           <span id="logoSubText">台股 AI 分析助理</span>
